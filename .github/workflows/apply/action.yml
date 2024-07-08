@@ -1,0 +1,41 @@
+name: 'Terraform apply'
+description: 'Setup Terraform and apply changes'
+inputs: 
+  tf_workspace: 
+    description: 'name of the Terraform workspace'
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - uses: hashicorp/setup-terraform@v3.1.0
+      with:
+        terraform_version: 1.7.0
+        terraform_wrapper: true
+
+    - name: Terraform Init
+      id: init
+      shell: bash
+      run: terraform init
+
+    - name: Terraform Plan
+      id: plan
+      shell: bash
+      run: terraform plan -out="${{inputs.tf_workspace}}_plan.tfplan"
+      continue-on-error: true
+
+    - name: Terraform apply
+      id: apply
+      shell: bash
+      run: terraform apply -input=false -auto-approve "${{inputs.tf_workspace}}_plan.tfplan"
+
+    - name: Save plan
+      id: save
+      shell: bash
+      run: terraform show --json "${{inputs.tf_workspace}}_plan.tfplan" >> "${{inputs.tf_workspace}}_plan.json"
+
+    - name: Archive plan
+      uses: actions/upload-artifact@v4
+      with:
+        name: "${{inputs.tf_workspace}} plan"
+        path: "${{inputs.tf_workspace}}_plan.json"

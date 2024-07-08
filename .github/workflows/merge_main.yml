@@ -1,0 +1,169 @@
+name: Deploy Dev, Staging, and Production
+
+on: 
+  push:
+    branches:
+      - main
+
+env: 
+  TF_VAR_db_password: ${{ secrets.DATABASE_PASSWORD }}
+  TF_VAR_twingate_token: ${{ secrets.TWINGATE_TOKEN }}
+  TF_VAR_google_client_id: ${{ vars.GOOGLE_CLIENT_ID }}
+  TF_VAR_google_client_secret: ${{ vars.GOOGLE_CLIENT_SECRET }}
+  TF_VAR_datadog_api_key: ${{ secrets.DD_API_KEY }}
+  TF_VAR_sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+  TF_VAR_conduktor_admin_password: ${{ secrets.CONDUKTOR_ADMIN_PASSWORD }}
+  TF_VAR_rudderstack_data_plane_url: ${{ vars.RUDDERSTACK_DATA_PLANE_URL }}
+  TF_VAR_rudderstack_write_key: ${{ secrets.RUDDERSTACK_WRITE_KEY }}
+  
+jobs:
+  plan_dev:
+    name: Plan Dev
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plan_dev
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: dev
+    env:
+      TF_WORKSPACE: dev
+      AWS_ROLE: ${{vars.DEV_OIDC_ROLE}}
+
+    steps:
+      - uses: actions/checkout@master
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform Plan
+        id: plan
+        uses: ./.github/workflows/plan
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+          pull_request_id: ${{ github.event.pull_request.number }}
+
+  apply_dev:
+    name: Apply dev
+    needs: [plan_dev]
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency:
+      group: apply_dev
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      TF_WORKSPACE: dev
+      AWS_ROLE: ${{vars.DEV_OIDC_ROLE}}
+      
+    steps:
+      - uses: actions/checkout@master
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform Apply
+        id: apply
+        uses: ./.github/workflows/apply
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+
+  apply_staging:
+    name: Apply staging
+    needs: [apply_dev]
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: apply_staging
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      TF_WORKSPACE: staging
+      AWS_ROLE: ${{vars.STG_OIDC_ROLE}}
+      
+    steps:
+      - uses: actions/checkout@master
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform Apply
+        id: apply
+        uses: ./.github/workflows/apply
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+  
+  apply_production:
+    name: Apply production
+    needs: [apply_staging]
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: apply_production
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      TF_WORKSPACE: production
+      AWS_ROLE: ${{vars.PRD_OIDC_ROLE}}
+      TF_VAR_db_instance_class: "db.t3.small"
+      TF_VAR_db_storage: 200
+      TF_VAR_kafka_instance_class: "kafka.m7g.large"
+      
+    steps:
+      - uses: actions/checkout@master
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform Apply
+        id: apply
+        uses: ./.github/workflows/apply
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+
+
+
+  failure:
+    name: Send Failure Notifications
+    runs-on: ubuntu-latest
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    needs: [plan_dev, apply_dev, apply_staging, apply_production]
+    steps:
+      - name: Send Failure Notification
+        id: start_slack
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          # This data can be any valid JSON from a previous step in the GitHub Action
+          payload: |
+            {
+             "text": "`aws` has **failed** to deploy"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}

@@ -1,0 +1,68 @@
+name: 'Terraform setup and plan'
+description: 'Setup Terraform and create plan'
+inputs: 
+  tf_workspace: 
+    description: 'name of the Terraform workspace'
+    required: true
+  pull_request_id: 
+    description: 'Github Pull Request ID'
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - uses: hashicorp/setup-terraform@v3.1.0
+      with:
+        terraform_version: 1.7.0
+        terraform_wrapper: true
+
+    - name: Terraform Init
+      id: init
+      shell: bash
+      run: terraform init
+
+    - name: Terraform Plan
+      id: plan
+      shell: bash
+      run: terraform plan -no-color | grep -E '(^.*[#~+-] .*|^[[:punct:]]|Plan)'
+      continue-on-error: true
+
+    - name: Find Comment
+      if: ${{ inputs.pull_request_id != '' }}
+      uses: peter-evans/find-comment@v3
+      id: fc
+      with:
+        issue-number: ${{ inputs.pull_request_id }}
+        comment-author: 'github-actions[bot]'
+        body-includes: "Terraform ${{ inputs.tf_workspace }}"
+
+    - name: Create comment
+      if: ${{ inputs.pull_request_id != '' && steps.fc.outputs.comment-id == '' }}
+      uses: peter-evans/create-or-update-comment@v3
+      with:
+        issue-number: ${{ inputs.pull_request_id }}
+        body: |
+          ### Terraform ${{ inputs.tf_workspace }} Plan Results
+          <details><summary>Plan</summary>
+          
+          ```
+          ${{ steps.plan.outputs.stdout }}
+          ```
+          </details>
+        reactions: 'eyes'
+
+    - name: Update comment
+      if: ${{ inputs.pull_request_id != '' && steps.fc.outputs.comment-id != '' }}
+      uses: peter-evans/create-or-update-comment@v3
+      with:
+        comment-id: ${{ steps.fc.outputs.comment-id }}
+        body: |
+          ### Terraform ${{ inputs.tf_workspace }} Plan Results
+          <details><summary>Plan</summary>
+          
+          ```
+          ${{ steps.plan.outputs.stdout }}
+          ```
+          </details>
+        reactions: 'eyes'
+        edit-mode: replace

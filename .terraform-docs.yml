@@ -1,0 +1,37 @@
+formatter: "markdown table" # this is required
+# @NOTE: Uncomment if you have modules stored in your module 
+# recursive:
+#   enabled: true
+#   path: modules
+sections:
+  show: 
+    - inputs
+    - outputs
+    - providers
+    - modules
+    - resources
+
+settings:
+  hide-empty: true
+
+output-values:
+  enabled: false
+  from: "output_values.json"
+
+sort:
+  enabled: true
+  by: name
+
+output:
+  file: "README.md"
+
+content: |-
+  <p align="center">
+    <h1 align="center">Terraform Infrastructure Documentation</h1>
+  </p>
+
+  {{ .Inputs }}
+  {{ .Resources }} 
+  {{ .Outputs }}
+  {{ .Providers }}
+  {{ .Modules }}

@@ -1,0 +1,251 @@
+name: Lint, Format, Validate, and Plan
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+
+env: 
+  TF_VAR_db_password: ${{ secrets.DATABASE_PASSWORD }}
+  TF_VAR_twingate_token: ${{ secrets.TWINGATE_TOKEN }}
+  TF_VAR_google_client_id: ${{ vars.GOOGLE_CLIENT_ID }}
+  TF_VAR_google_client_secret: ${{ vars.GOOGLE_CLIENT_SECRET }}
+  TF_VAR_datadog_api_key: ${{ secrets.DD_API_KEY }}
+  TF_VAR_sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+  TF_VAR_conduktor_admin_password: ${{ secrets.CONDUKTOR_ADMIN_PASSWORD }}
+  TF_VAR_rudderstack_data_plane_url: ${{ vars.RUDDERSTACK_DATA_PLANE_URL }}
+  TF_VAR_rudderstack_write_key: ${{ secrets.RUDDERSTACK_WRITE_KEY }}
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: validate
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@master
+
+      - uses: hashicorp/setup-terraform@v3.1.0
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: true
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ vars.DEV_OIDC_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    concurrency:
+      group: format
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@master
+
+      - uses: hashicorp/setup-terraform@v3.1.0
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: true
+
+      - name: Terraform Fmt
+        id: fmt
+        run: terraform fmt
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    concurrency:
+      group: lint
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@master
+
+      - uses: hashicorp/setup-terraform@v3.1.0
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: true
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ vars.DEV_OIDC_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - uses: actions/cache@v4  
+        name: Cache plugin dir
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-${{ hashFiles('.tflint.hcl') }}
+
+      - uses: terraform-linters/setup-tflint@v4
+        name: Setup TFLint
+        with:
+          tflint_version: latest
+   
+      - name: Init TFLint
+        run: tflint --init
+      
+      - name: Run TFLint
+        run: tflint -f compact
+
+  plan_dev:
+    name: Plan Dev
+    needs: [lint, validate, format]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plan_dev
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: dev
+    env:
+      TF_WORKSPACE: dev
+      AWS_ROLE: ${{ vars.DEV_OIDC_ROLE }}
+
+    steps:
+      - uses: actions/checkout@master
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Print Env
+        run: |
+          printenv | grep TF_VAR | sed -e 's/=/="/' -e 's/$/"/' -e "s/^TF_VAR_//" > ${{env.TF_WORKSPACE}}.tfvars
+          cat ${{env.TF_WORKSPACE}}.tfvars
+          aws s3 cp ${{env.TF_WORKSPACE}}.tfvars s3://fakebusiness-terraform/${{env.TF_WORKSPACE}}.tfvars
+
+      - name: Terraform Plan
+        id: plan
+        uses: ./.github/workflows/plan
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+          pull_request_id: ${{ github.event.pull_request.number }}
+
+  plan_staging:
+    name: Plan Staging
+    needs: [lint, validate, format]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plan_staging
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: staging
+    env:
+      TF_WORKSPACE: staging
+      AWS_ROLE: ${{vars.STG_OIDC_ROLE}}
+
+    steps:
+      - uses: actions/checkout@master
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+      
+      - name: Print Env
+        run: |
+          printenv | grep TF_VAR | sed -e 's/=/="/' -e 's/$/"/' -e "s/^TF_VAR_//" > ${{env.TF_WORKSPACE}}.tfvars
+          cat ${{env.TF_WORKSPACE}}.tfvars
+          aws s3 cp ${{env.TF_WORKSPACE}}.tfvars s3://fakebusiness-terraform/${{env.TF_WORKSPACE}}.tfvars
+      
+      - name: Terraform Plan
+        id: plan
+        uses: ./.github/workflows/plan
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+          pull_request_id: ${{ github.event.pull_request.number }}
+
+  plan_production:
+    name: Plan Production
+    needs: [lint, validate, format]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plan_production
+      cancel-in-progress: true 
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    environment: production
+    env:
+      TF_WORKSPACE: production
+      AWS_ROLE: ${{vars.PRD_OIDC_ROLE}}
+      TF_VAR_db_instance_class: "db.t3.small"
+      TF_VAR_db_storage: 200
+      TF_VAR_kafka_instance_class: "kafka.m7g.large"
+
+    steps:
+      - uses: actions/checkout@master
+
+      - uses: hashicorp/setup-terraform@v3.1.0
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: true
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Print Env
+        run: |
+          printenv | grep TF_VAR | sed -e 's/=/="/' -e 's/$/"/' -e "s/^TF_VAR_//" > ${{env.TF_WORKSPACE}}.tfvars
+          cat ${{env.TF_WORKSPACE}}.tfvars
+          aws s3 cp ${{env.TF_WORKSPACE}}.tfvars s3://fakebusiness-terraform/${{env.TF_WORKSPACE}}.tfvars
+
+      - name: Terraform Plan
+        if: ${{ github.event.pull_request.number }} != ''
+        id: plan
+        uses: ./.github/workflows/plan
+        with:
+          tf_workspace: ${{ env.TF_WORKSPACE }}
+          pull_request_id: ${{ github.event.pull_request.number }}
